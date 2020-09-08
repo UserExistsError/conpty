@@ -239,6 +239,7 @@ func Start(commandLine string) (*ConPty, error) {
 	}
 
 	cpty := &ConPty{
+		hpc: hPc,
 		pi: pi,
 		ptyIn: &handleIO{ptyIn},
 		ptyOut: &handleIO{ptyOut},
