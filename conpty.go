@@ -220,7 +220,7 @@ func Start(commandLine string) (*ConPty, error) {
 		return nil, fmt.Errorf("CreatePipe: %v", err)
 	}
 	if err := windows.CreatePipe(&cmdOut, &ptyOut, nil, 0); err != nil {
-		closeHandles(ptyIn, ptyOut)
+		closeHandles(ptyIn, cmdIn)
 		return nil, fmt.Errorf("CreatePipe: %v", err)
 	}
 
