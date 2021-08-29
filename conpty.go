@@ -2,20 +2,23 @@
 
 package conpty
 
-
 import (
+	"context"
+	"errors"
 	"fmt"
 	"unsafe"
+
 	"golang.org/x/sys/windows"
 )
 
 var (
-	modKernel32 = windows.NewLazySystemDLL("kernel32.dll")
-	fCreatePseudoConsole = modKernel32.NewProc("CreatePseudoConsole")
-	fResizePseudoConsole = modKernel32.NewProc("ResizePseudoConsole")
-	fClosePseudoConsole = modKernel32.NewProc("ClosePseudoConsole")
+	modKernel32                        = windows.NewLazySystemDLL("kernel32.dll")
+	fCreatePseudoConsole               = modKernel32.NewProc("CreatePseudoConsole")
+	fResizePseudoConsole               = modKernel32.NewProc("ResizePseudoConsole")
+	fClosePseudoConsole                = modKernel32.NewProc("ClosePseudoConsole")
 	fInitializeProcThreadAttributeList = modKernel32.NewProc("InitializeProcThreadAttributeList")
-	fUpdateProcThreadAttribute = modKernel32.NewProc("UpdateProcThreadAttribute")
+	fUpdateProcThreadAttribute         = modKernel32.NewProc("UpdateProcThreadAttribute")
+	ErrConPtyUnsupported               = errors.New("ConPty is not available on this version of Windows")
 )
 
 func IsConPtyAvailable() bool {
@@ -26,22 +29,23 @@ func IsConPtyAvailable() bool {
 		fUpdateProcThreadAttribute.Find() == nil
 }
 
-
 const (
-	STILL_ACTIVE uint32 = 259
-	S_OK uintptr = 0
-	PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE uintptr = 0x20016
+	_STILL_ACTIVE                        uint32  = 259
+	_S_OK                                uintptr = 0
+	_PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE uintptr = 0x20016
+	defaultConsoleWidth                          = 80 // in characters
+	defaultConsoleHeight                         = 40 // in characters
 )
 
-type COORD struct {
+type _COORD struct {
 	X, Y int16
 }
 
-func (c *COORD) Pack() uintptr {
+func (c *_COORD) Pack() uintptr {
 	return uintptr((int32(c.Y) << 16) | int32(c.X))
 }
 
-type HPCON windows.Handle
+type _HPCON windows.Handle
 
 type handleIO struct {
 	handle windows.Handle
@@ -64,60 +68,60 @@ func (h *handleIO) Close() error {
 }
 
 type ConPty struct {
-	hpc HPCON
-	pi *windows.ProcessInformation
+	hpc                          _HPCON
+	pi                           *windows.ProcessInformation
 	ptyIn, ptyOut, cmdIn, cmdOut *handleIO
 }
 
-func win32ClosePseudoConsole(hPc HPCON) {
+func win32ClosePseudoConsole(hPc _HPCON) {
 	if fClosePseudoConsole.Find() != nil {
 		return
 	}
+	// this kills the attached process. there is no return value.
 	fClosePseudoConsole.Call(uintptr(hPc))
 }
 
-func win32ResizePseudoConsole(hPc HPCON, coord *COORD) error {
+func win32ResizePseudoConsole(hPc _HPCON, coord *_COORD) error {
 	if fResizePseudoConsole.Find() != nil {
 		return fmt.Errorf("ResizePseudoConsole not found")
 	}
 	ret, _, _ := fResizePseudoConsole.Call(uintptr(hPc), coord.Pack())
-	if ret != S_OK {
+	if ret != _S_OK {
 		return fmt.Errorf("ResizePseudoConsole failed with status 0x%x", ret)
 	}
 	return nil
 }
 
-func win32CreatePseudoConsole(c *COORD, hIn, hOut windows.Handle) (HPCON, error){
+func win32CreatePseudoConsole(c *_COORD, hIn, hOut windows.Handle) (_HPCON, error) {
 	if fCreatePseudoConsole.Find() != nil {
 		return 0, fmt.Errorf("CreatePseudoConsole not found")
 	}
-	var hPc HPCON
+	var hPc _HPCON
 	ret, _, _ := fCreatePseudoConsole.Call(
 		c.Pack(),
 		uintptr(hIn),
 		uintptr(hOut),
 		0,
 		uintptr(unsafe.Pointer(&hPc)))
-	if ret != S_OK {
+	if ret != _S_OK {
 		return 0, fmt.Errorf("CreatePseudoConsole() failed with status 0x%x", ret)
 	}
 	return hPc, nil
 }
 
-type StartupInfoEx struct {
-	startupInfo windows.StartupInfo
+type _StartupInfoEx struct {
+	startupInfo   windows.StartupInfo
 	attributeList []byte
 }
 
-
-func getStartupInfoExForPTY(hpc HPCON) (*StartupInfoEx, error) {
+func getStartupInfoExForPTY(hpc _HPCON) (*_StartupInfoEx, error) {
 	if fInitializeProcThreadAttributeList.Find() != nil {
 		return nil, fmt.Errorf("InitializeProcThreadAttributeList not found")
 	}
 	if fUpdateProcThreadAttribute.Find() != nil {
 		return nil, fmt.Errorf("UpdateProcThreadAttribute not found")
 	}
-	var siEx StartupInfoEx
+	var siEx _StartupInfoEx
 	siEx.startupInfo.Cb = uint32(unsafe.Sizeof(windows.StartupInfo{}) + unsafe.Sizeof(&siEx.attributeList[0]))
 	var size uintptr
 
@@ -136,7 +140,7 @@ func getStartupInfoExForPTY(hpc HPCON) (*StartupInfoEx, error) {
 	ret, _, err = fUpdateProcThreadAttribute.Call(
 		uintptr(unsafe.Pointer(&siEx.attributeList[0])),
 		0,
-		PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+		_PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
 		uintptr(hpc),
 		unsafe.Sizeof(hpc),
 		0,
@@ -147,7 +151,7 @@ func getStartupInfoExForPTY(hpc HPCON) (*StartupInfoEx, error) {
 	return &siEx, nil
 }
 
-func createConsoleProcessAttachedToPTY(hpc HPCON, commandLine string) (*windows.ProcessInformation, error) {
+func createConsoleProcessAttachedToPTY(hpc _HPCON, commandLine string) (*windows.ProcessInformation, error) {
 	cmdLine, err := windows.UTF16PtrFromString(commandLine)
 	if err != nil {
 		return nil, err
@@ -174,45 +178,85 @@ func createConsoleProcessAttachedToPTY(hpc HPCON, commandLine string) (*windows.
 	return &pi, nil
 }
 
-func closeHandles(handles ...windows.Handle) {
-	for _, h := range (handles) {
-		windows.CloseHandle(h)
+// This will only return the first error.
+func closeHandles(handles ...windows.Handle) error {
+	var err error
+	for _, h := range handles {
+		if h != windows.InvalidHandle {
+			if err == nil {
+				err = windows.CloseHandle(h)
+			} else {
+				windows.CloseHandle(h)
+			}
+		}
 	}
+	return err
 }
 
-func (cpty *ConPty) Close() uint32 {
+// Close all open handles and terminate the process.
+func (cpty *ConPty) Close() error {
+	// there is no return code
 	win32ClosePseudoConsole(cpty.hpc)
-	cpty.ptyIn.Close()
-	cpty.ptyOut.Close()
-	cpty.cmdIn.Close()
-	cpty.cmdOut.Close()
-	var exitCode uint32 = STILL_ACTIVE
-	windows.GetExitCodeProcess(cpty.pi.Process, &exitCode)
-	return exitCode
+	return closeHandles(
+		cpty.pi.Process,
+		cpty.pi.Thread,
+		cpty.ptyIn.handle,
+		cpty.ptyOut.handle,
+		cpty.cmdIn.handle,
+		cpty.cmdOut.handle)
 }
 
-func (cpty *ConPty) Wait() {
+// Wait for the process to exit and return the exit code. If context is canceled,
+// Wait() will return STILL_ACTIVE and an error indicating the context was canceled.
+func (cpty *ConPty) Wait(ctx context.Context) (uint32, error) {
+	var exitCode uint32 = _STILL_ACTIVE
 	for {
+		if err := ctx.Err(); err != nil {
+			return _STILL_ACTIVE, fmt.Errorf("wait canceled: %v", err)
+		}
 		ret, _ := windows.WaitForSingleObject(cpty.pi.Process, 1000)
 		if ret != uint32(windows.WAIT_TIMEOUT) {
-			break
+			err := windows.GetExitCodeProcess(cpty.pi.Process, &exitCode)
+			return exitCode, err
 		}
 	}
 }
 
 func (cpty *ConPty) Read(p []byte) (int, error) {
-	n, err := cpty.cmdOut.Read(p)
-	return n, err
+	return cpty.cmdOut.Read(p)
 }
 
 func (cpty *ConPty) Write(p []byte) (int, error) {
-	n, err := cpty.cmdIn.Write(p)
-	return n, err
+	return cpty.cmdIn.Write(p)
 }
 
-func Start(commandLine string) (*ConPty, error) {
+type conPtyArgs struct {
+	coords _COORD
+}
+
+type ConPtyOption func(args *conPtyArgs)
+
+func ConPtyDimensions(width, height int) ConPtyOption {
+	return func(args *conPtyArgs) {
+		args.coords.X = int16(width)
+		args.coords.Y = int16(height)
+	}
+}
+
+// Start a new process specified in `commandLine` and attach a pseudo console using the Windows
+// ConPty API. If ConPty is not available, ErrConPtyUnsupported will be returned.
+//
+// On successful return, an instance of ConPty is returned. You must call Close() on this to release
+// any resources associated with the process. To get the exit code of the process, you can call Wait().
+func Start(commandLine string, options ...ConPtyOption) (*ConPty, error) {
 	if !IsConPtyAvailable() {
-		return nil, fmt.Errorf("ConPty is not available on this version of Windows")
+		return nil, ErrConPtyUnsupported
+	}
+	args := &conPtyArgs{
+		coords: _COORD{defaultConsoleWidth, defaultConsoleHeight},
+	}
+	for _, opt := range options {
+		opt(args)
 	}
 
 	var cmdIn, cmdOut, ptyIn, ptyOut windows.Handle
@@ -224,8 +268,7 @@ func Start(commandLine string) (*ConPty, error) {
 		return nil, fmt.Errorf("CreatePipe: %v", err)
 	}
 
-	coord := &COORD{80, 40}
-	hPc, err := win32CreatePseudoConsole(coord, ptyIn, ptyOut)
+	hPc, err := win32CreatePseudoConsole(&args.coords, ptyIn, ptyOut)
 	if err != nil {
 		closeHandles(ptyIn, ptyOut, cmdIn, cmdOut)
 		return nil, err
@@ -239,24 +282,12 @@ func Start(commandLine string) (*ConPty, error) {
 	}
 
 	cpty := &ConPty{
-		hpc: hPc,
-		pi: pi,
-		ptyIn: &handleIO{ptyIn},
+		hpc:    hPc,
+		pi:     pi,
+		ptyIn:  &handleIO{ptyIn},
 		ptyOut: &handleIO{ptyOut},
-		cmdIn: &handleIO{cmdIn},
+		cmdIn:  &handleIO{cmdIn},
 		cmdOut: &handleIO{cmdOut},
 	}
-
-	go func() {
-		// wait for process to finish then close the pipes
-		defer cpty.Close()
-		for {
-			ret, _ := windows.WaitForSingleObject(cpty.pi.Process, 1000)
-			if ret != uint32(windows.WAIT_TIMEOUT) {
-				break
-			}
-		}
-	}()
-
 	return cpty, nil
 }
