@@ -1,3 +1,4 @@
+//go:build windows
 // +build windows
 
 package conpty
@@ -220,6 +221,15 @@ func (cpty *ConPty) Wait(ctx context.Context) (uint32, error) {
 			return exitCode, err
 		}
 	}
+}
+
+func (cpty *ConPty) Resize(width, height int) error {
+	coords := _COORD{
+		int16(width),
+		int16(height),
+	}
+
+	return win32ResizePseudoConsole(cpty.hpc, &coords)
 }
 
 func (cpty *ConPty) Read(p []byte) (int, error) {
