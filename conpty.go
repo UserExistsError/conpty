@@ -124,6 +124,7 @@ func getStartupInfoExForPTY(hpc _HPCON) (*_StartupInfoEx, error) {
 	}
 	var siEx _StartupInfoEx
 	siEx.startupInfo.Cb = uint32(unsafe.Sizeof(windows.StartupInfo{}) + unsafe.Sizeof(&siEx.attributeList[0]))
+	siEx.startupInfo.Flags |= windows.STARTF_USESTDHANDLES
 	var size uintptr
 
 	// first call is to get required size. this should return false.
