@@ -153,10 +153,17 @@ func getStartupInfoExForPTY(hpc _HPCON) (*_StartupInfoEx, error) {
 	return &siEx, nil
 }
 
-func createConsoleProcessAttachedToPTY(hpc _HPCON, commandLine string) (*windows.ProcessInformation, error) {
+func createConsoleProcessAttachedToPTY(hpc _HPCON, commandLine, workDir string) (*windows.ProcessInformation, error) {
 	cmdLine, err := windows.UTF16PtrFromString(commandLine)
 	if err != nil {
 		return nil, err
+	}
+	var currentDirectory *uint16
+	if workDir != "" {
+		currentDirectory, err = windows.UTF16PtrFromString(workDir)
+		if err != nil {
+			return nil, err
+		}
 	}
 	siEx, err := getStartupInfoExForPTY(hpc)
 	if err != nil {
@@ -171,7 +178,7 @@ func createConsoleProcessAttachedToPTY(hpc _HPCON, commandLine string) (*windows
 		false, // inheritHandle
 		windows.EXTENDED_STARTUPINFO_PRESENT,
 		nil,
-		nil,
+		currentDirectory,
 		&siEx.startupInfo,
 		&pi)
 	if err != nil {
@@ -242,7 +249,8 @@ func (cpty *ConPty) Write(p []byte) (int, error) {
 }
 
 type conPtyArgs struct {
-	coords _COORD
+	coords  _COORD
+	workDir string
 }
 
 type ConPtyOption func(args *conPtyArgs)
@@ -251,6 +259,12 @@ func ConPtyDimensions(width, height int) ConPtyOption {
 	return func(args *conPtyArgs) {
 		args.coords.X = int16(width)
 		args.coords.Y = int16(height)
+	}
+}
+
+func ConPtyWorkDir(workDir string) ConPtyOption {
+	return func(args *conPtyArgs) {
+		args.workDir = workDir
 	}
 }
 
@@ -285,7 +299,7 @@ func Start(commandLine string, options ...ConPtyOption) (*ConPty, error) {
 		return nil, err
 	}
 
-	pi, err := createConsoleProcessAttachedToPTY(hPc, commandLine)
+	pi, err := createConsoleProcessAttachedToPTY(hPc, commandLine, args.workDir)
 	if err != nil {
 		closeHandles(ptyIn, ptyOut, cmdIn, cmdOut)
 		win32ClosePseudoConsole(hPc)
