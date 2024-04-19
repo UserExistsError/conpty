@@ -248,6 +248,10 @@ func (cpty *ConPty) Write(p []byte) (int, error) {
 	return cpty.cmdIn.Write(p)
 }
 
+func (cpty *ConPty) Pid() (uint32) {
+	return cpty.pi.ProcessId
+}
+
 type conPtyArgs struct {
 	coords  _COORD
 	workDir string
