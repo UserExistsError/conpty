@@ -248,8 +248,8 @@ func (cpty *ConPty) Write(p []byte) (int, error) {
 	return cpty.cmdIn.Write(p)
 }
 
-func (cpty *ConPty) Pid() (uint32) {
-	return cpty.pi.ProcessId
+func (cpty *ConPty) Pid() int {
+	return int(cpty.pi.ProcessId)
 }
 
 type conPtyArgs struct {
