@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"unicode/utf16"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -153,7 +154,7 @@ func getStartupInfoExForPTY(hpc _HPCON) (*_StartupInfoEx, error) {
 	return &siEx, nil
 }
 
-func createConsoleProcessAttachedToPTY(hpc _HPCON, commandLine, workDir string) (*windows.ProcessInformation, error) {
+func createConsoleProcessAttachedToPTY(hpc _HPCON, commandLine, workDir string, env []string) (*windows.ProcessInformation, error) {
 	cmdLine, err := windows.UTF16PtrFromString(commandLine)
 	if err != nil {
 		return nil, err
@@ -164,6 +165,12 @@ func createConsoleProcessAttachedToPTY(hpc _HPCON, commandLine, workDir string) 
 		if err != nil {
 			return nil, err
 		}
+	}
+	var envBlock *uint16
+	flags := uint32(windows.EXTENDED_STARTUPINFO_PRESENT)
+	if env != nil {
+		flags |= uint32(windows.CREATE_UNICODE_ENVIRONMENT)
+		envBlock = createEnvBlock(env)
 	}
 	siEx, err := getStartupInfoExForPTY(hpc)
 	if err != nil {
@@ -176,8 +183,8 @@ func createConsoleProcessAttachedToPTY(hpc _HPCON, commandLine, workDir string) 
 		nil,
 		nil,
 		false, // inheritHandle
-		windows.EXTENDED_STARTUPINFO_PRESENT,
-		nil,
+		flags,
+		envBlock,
 		currentDirectory,
 		&siEx.startupInfo,
 		&pi)
@@ -185,6 +192,31 @@ func createConsoleProcessAttachedToPTY(hpc _HPCON, commandLine, workDir string) 
 		return nil, err
 	}
 	return &pi, nil
+}
+
+// createEnvBlock refers to syscall.createEnvBlock in go/src/syscall/exec_windows.go
+// Sourced From: https://github.com/creack/pty/pull/155
+func createEnvBlock(envv []string) *uint16 {
+	if len(envv) == 0 {
+		return &utf16.Encode([]rune("\x00\x00"))[0]
+	}
+	length := 0
+	for _, s := range envv {
+		length += len(s) + 1
+	}
+	length += 1
+
+	b := make([]byte, length)
+	i := 0
+	for _, s := range envv {
+		l := len(s)
+		copy(b[i:i+l], []byte(s))
+		copy(b[i+l:i+l+1], []byte{0})
+		i = i + l + 1
+	}
+	copy(b[i:i+1], []byte{0})
+
+	return &utf16.Encode([]rune(string(b)))[0]
 }
 
 // This will only return the first error.
@@ -255,6 +287,7 @@ func (cpty *ConPty) Pid() int {
 type conPtyArgs struct {
 	coords  _COORD
 	workDir string
+	env     []string
 }
 
 type ConPtyOption func(args *conPtyArgs)
@@ -269,6 +302,12 @@ func ConPtyDimensions(width, height int) ConPtyOption {
 func ConPtyWorkDir(workDir string) ConPtyOption {
 	return func(args *conPtyArgs) {
 		args.workDir = workDir
+	}
+}
+
+func ConPtyEnv(env []string) ConPtyOption {
+	return func(args *conPtyArgs) {
+		args.env = env
 	}
 }
 
@@ -303,7 +342,7 @@ func Start(commandLine string, options ...ConPtyOption) (*ConPty, error) {
 		return nil, err
 	}
 
-	pi, err := createConsoleProcessAttachedToPTY(hPc, commandLine, args.workDir)
+	pi, err := createConsoleProcessAttachedToPTY(hPc, commandLine, args.workDir, args.env)
 	if err != nil {
 		closeHandles(ptyIn, ptyOut, cmdIn, cmdOut)
 		win32ClosePseudoConsole(hPc)
