@@ -130,7 +130,7 @@ func getStartupInfoExForPTY(hpc _HPCON) (*_StartupInfoEx, error) {
 
 	// first call is to get required size. this should return false.
 	ret, _, _ := fInitializeProcThreadAttributeList.Call(0, 1, 0, uintptr(unsafe.Pointer(&size)))
-	siEx.attributeList = make([]byte, size, size)
+	siEx.attributeList = make([]byte, size)
 	ret, _, err := fInitializeProcThreadAttributeList.Call(
 		uintptr(unsafe.Pointer(&siEx.attributeList[0])),
 		1,
