@@ -154,7 +154,38 @@ func getStartupInfoExForPTY(hpc _HPCON) (*_StartupInfoEx, error) {
 	return &siEx, nil
 }
 
-func createConsoleProcessAttachedToPTY(hpc _HPCON, commandLine, workDir string, env []string) (*windows.ProcessInformation, error) {
+func createProcessAsUser(token windows.Token, appName *uint16, commandLine *uint16, procSecurity *windows.SecurityAttributes, threadSecurity *windows.SecurityAttributes, inheritHandles bool, creationFlags uint32, env *uint16, currentDir *uint16, startupInfo *windows.StartupInfo, outProcInfo *windows.ProcessInformation) error {
+	if token == 0 {
+		return windows.CreateProcess(
+			appName,
+			commandLine,
+			procSecurity,
+			threadSecurity,
+			inheritHandles,
+			creationFlags,
+			env,
+			currentDir,
+			startupInfo,
+			outProcInfo,
+		)
+	}
+
+	return windows.CreateProcessAsUser(
+		token,
+		appName,
+		commandLine,
+		procSecurity,
+		threadSecurity,
+		inheritHandles,
+		creationFlags,
+		env,
+		currentDir,
+		startupInfo,
+		outProcInfo,
+	)
+}
+
+func createConsoleProcessAttachedToPTY(hpc _HPCON, commandLine, workDir string, env []string, token windows.Token) (*windows.ProcessInformation, error) {
 	cmdLine, err := windows.UTF16PtrFromString(commandLine)
 	if err != nil {
 		return nil, err
@@ -177,7 +208,8 @@ func createConsoleProcessAttachedToPTY(hpc _HPCON, commandLine, workDir string, 
 		return nil, err
 	}
 	var pi windows.ProcessInformation
-	err = windows.CreateProcess(
+	err = createProcessAsUser(
+		token,
 		nil, // use this if no args
 		cmdLine,
 		nil,
@@ -288,6 +320,7 @@ type conPtyArgs struct {
 	coords  _COORD
 	workDir string
 	env     []string
+	token   windows.Token
 }
 
 type ConPtyOption func(args *conPtyArgs)
@@ -308,6 +341,22 @@ func ConPtyWorkDir(workDir string) ConPtyOption {
 func ConPtyEnv(env []string) ConPtyOption {
 	return func(args *conPtyArgs) {
 		args.env = env
+	}
+}
+
+// ConPtyToken launches the child process as the given user by calling
+// CreateProcessAsUser instead of CreateProcess.
+//
+// The token must be a primary token (LogonUser returns one; OpenProcessToken
+// returns an impersonation token and must be duplicated with
+// DuplicateTokenEx(TokenPrimary) first).
+//
+// The calling process must hold SE_ASSIGNPRIMARYTOKEN_NAME. Even when the
+// account has the privilege assigned, it is typically disabled by default
+// and must be enabled via AdjustTokenPrivileges before calling Start.
+func ConPtyToken(token windows.Token) ConPtyOption {
+	return func(args *conPtyArgs) {
+		args.token = token
 	}
 }
 
@@ -342,7 +391,7 @@ func Start(commandLine string, options ...ConPtyOption) (*ConPty, error) {
 		return nil, err
 	}
 
-	pi, err := createConsoleProcessAttachedToPTY(hPc, commandLine, args.workDir, args.env)
+	pi, err := createConsoleProcessAttachedToPTY(hPc, commandLine, args.workDir, args.env, args.token)
 	if err != nil {
 		closeHandles(ptyIn, ptyOut, cmdIn, cmdOut)
 		win32ClosePseudoConsole(hPc)
